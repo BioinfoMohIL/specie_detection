@@ -18,6 +18,15 @@ To discriminate EColi ans Shigella, we need to use another workflow: de novo ass
 use blast to check the presence of lacY, a gene present in all EColi but not in Shigella
 '''
 
+def error_handler(func):
+    def wrapper(*args, **kwargs):
+        try:
+            return func(*args, **kwargs)
+        except Exception as e:
+            logging.error(f"Error in {func.__name__}: {e}", exc_info=True)
+            exit()
+    return wrapper
+
 def create_dir(d):
     try:
         os.makedirs(d, exist_ok=True)
@@ -28,7 +37,7 @@ def create_dir(d):
         exit(msg)
 
 
-
+@error_handler
 def gather_reads(arr):
     paired_files = {}
     extensions = ['.fastq', '.fq', '.fasq', '.fq.gz', '.fastq.gz']
@@ -44,6 +53,7 @@ def gather_reads(arr):
 
     return paired_files
 
+@error_handler
 def get_specie(file):
     cmd = "awk -F'\t' '$4 == \"S\" {print $6; exit}' " + file
 
@@ -58,6 +68,19 @@ def get_specie(file):
     else:
         return ''
 
+def create_report(inp, out):
+    specie_detected = get_specie(inp) 
+
+    if not os.path.exists('specie_detection.csv'):
+        with open(report_csv, 'w') as f:
+            f.write(f'sample\tspecie detected\n')
+            f.write(f'{sample}\t{specie_detected}\n')
+    else:
+        with open(report_csv,"a") as f:
+            f.write(f'{sample}\t{specie_detected}\n')
+
+
+@error_handler
 def create_specie_detection_report(inp, out):
     specie_detected = get_specie(inp) 
 
@@ -91,6 +114,7 @@ def fetch_ecoli_and_shigella(inp, x):
 
     return matching, others
 
+@error_handler
 def trimming(r1, r2, inp, out, cpus=8):
     cmd = f"""
     trimmomatic PE -phred33 -threads {cpus} \
@@ -102,26 +126,26 @@ def trimming(r1, r2, inp, out, cpus=8):
     """
     os.system(cmd)
 
-def metagenomics(r1, r2, output, sample, db, cpus=10):
-    try:
-        cmd = f"""
+@error_handler
+def metagenomics(r1, r2, report, db, cpus=10):
+    cmd = f"""
         kraken2 --use-names --db {db} \
         --threads {cpus} \
-        --report {output}/{sample}.report \
+        --report {report} \
         --paired {r1} {r2} \
         --output - 2>&1
         """
-        os.system(cmd)
-    except:
-        with open(f'{sample}.error', 'w') as f:
-            f.write(f'Cannot get the specie\n')
+    os.system(cmd)
+   
 
+@error_handler
 def assembly(r1, r2, output, sample, cpus=30):
     cmd =  f'spades.py -1 {r1} -2 {r2} -t {cpus} -o {output};'
     cmd += f'mv {output}/scaffolds.fasta {output}/{sample}.fasta 2>&1'
 
     os.system(cmd)
 
+@error_handler
 def gather_assemblies(source, destination):
     shutil.move(source, destination)
 
@@ -143,14 +167,16 @@ def combine_fastas(input_dir, output_dir):
     for file in os.listdir(input_dir):
         modify_fasta_header(f'{input_dir}/{file}', tmp_dir)
         os.system(f'cat {tmp_dir}/{file} >> {seq_combined_file}')
-    
-        
+
+@error_handler         
 def create_db(file, output_dir):
     os.system(f'makeblastdb -in {file} -dbtype nucl -out {output_dir}/db')
 
+@error_handler
 def blast(query, db, out):
     os.system(f'blastn -query {query} -db {db} -out {out} -outfmt 6 2>&1')
 
+@error_handler
 def filter_blast_results(
         input_dir, output_csv, min_length=1200, 
         min_identity=90.0, max_evalue=1e-5):
@@ -297,6 +323,29 @@ arr_ecoli_shigella_reads, arr_others_reads = fetch_ecoli_and_shigella(genomes, e
 ec_sh_species   = gather_reads(arr_ecoli_shigella_reads)
 others_species  = gather_reads(arr_others_reads)
 
+# Specie that are not ecoli shigella can be detected by kraken2 -- no problem!
+if others_species:
+    for sample, files in others_species.items():
+        logging.info(f'[Kraken2] sample : {sample}')
+        r1 = files['R1']
+        r2 = files['R2']
+        
+        report = f'{specie_detection_dir}/{sample}.report'
+        metagenomics(
+            r1=f'{genomes}/{r1}',
+            r2=f'{genomes}/{r2}',
+            report=report,
+            db=DB
+        )
+
+        get_specie()
+
+        # create_detection_report(
+        #     sample=sample,
+        #     inp=specie_detection_dir,
+        #     out={params.output_dir}/reports/specie_detection_report)
+     
+exit()
 # If samples ECXXXX or F-ECXXXX or SGXXXXX are present, we need discriminate them
 # in blasting genes specifi to ecoli and shigella, because kraken cannot
 if ec_sh_species:
@@ -373,39 +422,10 @@ if ec_sh_species:
             csv_writer.writerow(header) 
             csv_writer.writerows(values) 
     else:
-        print(f"[EC_SG Detection] Error occurred while fetching report values\n")
-        # logging.error(f"[EC_SG Detection] Error occurred while fetching report values\n")
+        logging.error(f"[EC_SG Detection] Error occurred while fetching report values\n")
+        exit()
 
 
-#     for specie in arr_ecoli_shigella_r1:
-#         sample = specie.split('_')[0]
-#         ext = specie.split('.')[1]
-
-#         inp = os.path.join(output_dir, sample, TRIMMED_DIR)
-#         out = os.path.join(output_dir, sample, _ES)
-
-#         assembly(
-#             r1=f'{inp}/{sample}_R1.{ext}',
-#             r2=f'{inp}/{sample}_R2.{ext}',
-#             sample=sample,
-#             output=out,
-#         )   
-
-# if others_species:
-#     for sample, files in others_species.items():
-#         r1 = files['R1']
-#         r2 = files['R2']
-
-#         # inp = os.path.join(output_dir, sample, TRIMMED_DIR)
-#         inp = genomes
-        
-#         metagenomics(
-#             r1=f'{inp}/{r1}',
-#             r2=f'{inp}/{r2}',
-#             sample=sample,
-#             output=specie_detection_dir,
-#             db=DB
-#         )
 
 
 
