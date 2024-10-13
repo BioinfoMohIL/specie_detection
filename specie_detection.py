@@ -1,4 +1,5 @@
 import os
+import re
 import csv
 import shutil
 import logging
@@ -18,6 +19,10 @@ To discriminate EColi ans Shigella, we need to use another workflow: de novo ass
 use blast to check the presence of lacY, a gene present in all EColi but not in Shigella
 '''
 
+def get_info(msg):
+    print(msg)
+    logging.info(msg)
+
 def error_handler(func):
     def wrapper(*args, **kwargs):
         try:
@@ -36,6 +41,12 @@ def create_dir(d):
         logging.error(f"[create_dir] Error occurred while creating directory {d}: {e}\n")
         exit(msg)
 
+def remove_dir(dir_path):
+    try:
+        shutil.rmtree(dir_path)
+        get_info(f"Successfully removed the directory: {dir_path}")
+    except OSError as e:
+        get_info(f"Error: {e.strerror}")
 
 @error_handler
 def gather_reads(arr):
@@ -67,41 +78,19 @@ def get_specie(file):
         return values[0]
     else:
         return ''
-
-def create_report(inp, out):
-    specie_detected = get_specie(inp) 
-
-    if not os.path.exists('specie_detection.csv'):
-        with open(report_csv, 'w') as f:
-            f.write(f'sample\tspecie detected\n')
-            f.write(f'{sample}\t{specie_detected}\n')
-    else:
-        with open(report_csv,"a") as f:
-            f.write(f'{sample}\t{specie_detected}\n')
-
-
+    
 @error_handler
-def create_specie_detection_report(inp, out):
-    specie_detected = get_specie(inp) 
+def create_detection_report(input_file, output_file, sample):
+    specie_detected = get_specie(input_file) 
 
-    if not os.path.exists(out):
-        try:
-            os.makedirs(out)
-        except:
-            pass
-
-    now = datetime.now()
-    formatted_date = now.strftime("%Y%m%d")
-
-    report_csv = f'{my_output}/specie_detection_{formatted_date}.csv' 
-
-    if not os.path.exists(report_csv):
-        with open(report_csv, 'w') as f:
-            f.write(f'sample\tSpecie Detected\n')
-            f.write(f'{sample}\t{specie_detected}\n')
+    if not os.path.exists(DETECTION_REPORT_FILE):
+        with open(output_file, 'w') as f:
+            f.write(f'{SAMPLE_NAME_COL},{SPECIE_DETECTED_COL}\n')
+            f.write(f'{sample},{specie_detected}\n')
     else:
-        with open(report_csv,"a") as f:
-            f.write(f'{sample}\t{specie_detected}\n')
+        with open(output_file,"a") as f:
+            f.write(f'{sample},{specie_detected}\n')
+
 
 def fetch_ecoli_and_shigella(inp, x):
     matching = []
@@ -122,7 +111,7 @@ def trimming(r1, r2, inp, out, cpus=8):
     {out}/{r1} {out}/trim_unpaired_{r1} \
     {out}/{r2} {out}/trim_unpaired_{r2} \
     HEADCROP:20 SLIDINGWINDOW:4:20 LEADING:3 TRAILING:3 CROP:265 MINLEN:50;
-    rm -f {out}/trim_unpaired_*;
+    rm -f {out}/trim_unpaired_* > /dev/null;
     """
     os.system(cmd)
 
@@ -137,11 +126,10 @@ def metagenomics(r1, r2, report, db, cpus=10):
         """
     os.system(cmd)
    
-
 @error_handler
 def assembly(r1, r2, output, sample, cpus=30):
-    cmd =  f'spades.py -1 {r1} -2 {r2} -t {cpus} -o {output};'
-    cmd += f'mv {output}/scaffolds.fasta {output}/{sample}.fasta 2>&1'
+    cmd =  f'spades.py -1 {r1} -2 {r2} -t {cpus} -o {output} > /dev/null;'
+    cmd += f'mv {output}/scaffolds.fasta {output}/{sample}.fasta'
 
     os.system(cmd)
 
@@ -159,7 +147,6 @@ def combine_fastas(input_dir, output_dir):
     if not os.path.exists(output_dir):
         os.makedirs(output_dir)
     
-    tmp_dir = 'tmp'
     if os.path.exists(tmp_dir):
         shutil.rmtree(tmp_dir)
     os.makedirs(tmp_dir)
@@ -232,6 +219,7 @@ def filter_blast_results(
         csv_writer = csv.writer(out_file)
         csv_writer.writerow(header) 
         csv_writer.writerows(filtered_results)  
+
 ######################################################
 #####################################################
 # Args
@@ -248,8 +236,10 @@ args = parser.parse_args()
 
 DB                     = '/home/user1/Desktop/analysis/genome_analysis/dev/bin/minikraken2_v2_8GB_201904_UPDATE'
 DB_DIR                 = 'db'
-GENES_DIR              = 'genes'
+TMP_DIR                = 'tmp'
 LOGS_DIR               = 'logs'
+GENES_DIR              = 'genes'
+EC_SG_DIR              = 'ec_sg'
 SAMPLES_DIR            = 'samples'
 TRIMMED_DIR            = 'trimmed'
 ASSEMBLY_DIR           = 'assembly'
@@ -259,12 +249,15 @@ BLAST_RESULTS_DIR      = 'blast_results'
 SPECIE_DETECTION_DIR   = 'specie_detection'
 
 LOGS_FILE              = 'logs.txt'
+
+MATCHED_FILE           = 'matched.txt'
 EC_SG_REPORT_FILE      = 'ec_sg_report.csv'
 EC_SG_SUM_REPORT_FILE  = 'ec_sg_sum_report.csv'
 DETECTION_REPORT_FILE  = 'detection_report.csv'
 
 GENE_NAME_COL          = 'gene'
 SAMPLE_NAME_COL        = 'sample'
+SPECIE_DETECTED_COL    = 'specie detected'
 LACY                   = 'lacY' 
 IPAH_1                 = 'ipaH_1'
 IPAH_7                 = 'ipaH_7'
@@ -275,35 +268,59 @@ HEADER_SPECIE          = 'specie detected'
 now = datetime.now()
 formatted_date = now.strftime("%Y%m%d_%H%M%S")
 
-
 genomes             = args.input
 wd                  = os.path.dirname(os.path.realpath(__file__))
 genes_dir           = os.path.join(wd, GENES_DIR)
 output_dir          = os.path.join(wd, args.output)
+tmp_dir             = os.path.join(wd, TMP_DIR)
 
 specie_detection_dir  = os.path.join(args.output, f'{SPECIE_DETECTION_DIR}_{formatted_date}')
 assemblies_dir        = os.path.join(specie_detection_dir, ASSEMBLIES_DIR)
-samples_dir           = os.path.join(specie_detection_dir, SAMPLES_DIR)
 logs_dir              = os.path.join(specie_detection_dir, LOGS_DIR)
-db_dir                = os.path.join(specie_detection_dir, DB_DIR)
-blast_dir             = os.path.join(specie_detection_dir, BLAST_RESULTS_DIR)
-seq_combined_dir      = os.path.join(specie_detection_dir, SEQ_COMBINED_DIR)
 
-db_name             = os.path.join(db_dir, 'db')
+ec_sg_dir             = os.path.join(specie_detection_dir, EC_SG_DIR)
+samples_dir           = os.path.join(ec_sg_dir, SAMPLES_DIR)
+db_dir                = os.path.join(ec_sg_dir, DB_DIR)
+blast_dir             = os.path.join(ec_sg_dir, BLAST_RESULTS_DIR)
+seq_combined_dir      = os.path.join(ec_sg_dir, SEQ_COMBINED_DIR)
 
-logs_file           = os.path.join(logs_dir, LOGS_FILE)
-seq_combined_file   = os.path.join(seq_combined_dir, 'seq_combined_file')
-blast_report_file   = os.path.join(blast_dir, EC_SG_REPORT_FILE)
+db_name               = os.path.join(db_dir, 'db')
+
+logs_file               = os.path.join(logs_dir, LOGS_FILE)
+seq_combined_file       = os.path.join(seq_combined_dir, 'seq_combined_file')
+blast_report_file       = os.path.join(blast_dir, EC_SG_REPORT_FILE)
 blast_sum_report_file   = os.path.join(blast_dir, EC_SG_SUM_REPORT_FILE)
-detection_report_file  = os.path.join(specie_detection_dir, DETECTION_REPORT_FILE)
+detection_report_file   = os.path.join(specie_detection_dir, DETECTION_REPORT_FILE)
+matched_file            = os.path.join(specie_detection_dir, MATCHED_FILE)
 
 ec_and_sh           = ['EC', 'F-EC', 'SG']
 ec_genes = [LACY]
-sg_genes = [IPAH_1, IPAH_7]
+sg_genes = [IPAH_1]
 species_by_genes = {
     'lacY' : 'ecoli',
     'ipaH_1': 'shigella',
     'ipaH_7': 'shigella'
+}
+
+species_list = {
+    'BP'    : 	'Bordetella pertussis',
+    'EC'    : 	'Ecoli',
+    'F-EC'  : 	'Ecoli',
+    'SG'    : 	'Shigella',
+    'HI'    : 	'Haemophilus influenzae',
+    'LC'    : 	'Listeria monocytogenes',
+    'LF'    : 	'Listeria monocytogenes',
+    'LG'    : 	'Legionella pneumophila',
+    'LW'    : 	'Legionella pneumophila',
+    'NM'    : 	'Neisseria meningitidis',
+    'SA'    : 	'Staphylococcus epidermidis',
+    'SH'    : 	'Salmonella enterica',
+    'SO'    : 	'Salmonella enterica',
+    'SP'    : 	'Streptococcus pneumoniae',
+    'ST'    : 	'Streptococcus pyogenes',
+    'ST'    : 	'Streptococcus agalactiae',
+    'V '    :   ' Vibrio cholerae',
+    'CA'    :   ' Campylobacter'
 }
 
 create_dir(logs_dir)
@@ -315,22 +332,27 @@ logging.basicConfig(filename=logs_file, level=logging.DEBUG,
 ############################################################
 # Start
 
-create_dir(specie_detection_dir)
+get_info(f'[SD] Script running ...\n')
 
+create_dir(specie_detection_dir)
 
 arr_ecoli_shigella_reads, arr_others_reads = fetch_ecoli_and_shigella(genomes, ec_and_sh)
 
 ec_sh_species   = gather_reads(arr_ecoli_shigella_reads)
 others_species  = gather_reads(arr_others_reads)
 
+
 # Specie that are not ecoli shigella can be detected by kraken2 -- no problem!
 if others_species:
     for sample, files in others_species.items():
-        logging.info(f'[Kraken2] sample : {sample}')
+        get_info(f'[Kraken2] sample : {sample}\n')
         r1 = files['R1']
         r2 = files['R2']
         
-        report = f'{specie_detection_dir}/{sample}.report'
+        kraken_report_dir = os.path.join(specie_detection_dir, 'kraken_report')
+        create_dir(kraken_report_dir)
+        report = f'{kraken_report_dir}/{sample}.report'
+       
         metagenomics(
             r1=f'{genomes}/{r1}',
             r2=f'{genomes}/{r2}',
@@ -338,17 +360,21 @@ if others_species:
             db=DB
         )
 
-        get_specie()
+        create_detection_report(
+            input_file=report,
+            sample=sample,
+            output_file=detection_report_file
+            )
+        
+get_info('Report created!\n')
 
-        # create_detection_report(
-        #     sample=sample,
-        #     inp=specie_detection_dir,
-        #     out={params.output_dir}/reports/specie_detection_report)
-     
-exit()
 # If samples ECXXXX or F-ECXXXX or SGXXXXX are present, we need discriminate them
 # in blasting genes specifi to ecoli and shigella, because kraken cannot
 if ec_sh_species:
+    get_info('[SD] e.coli and shigella detected!\n') 
+   
+    create_dir(ec_sg_dir)
+
     create_dir(assemblies_dir)
 
     for sample, files in ec_sh_species.items():
@@ -371,11 +397,11 @@ if ec_sh_species:
         
         if len(assembly_dir) > 0:
             gather_assemblies(
-                source=f'{assembly_dir}.{sample}.fasta',
+                source=f'{assembly_dir}/{sample}.fasta',
                 destination=assemblies_dir
             )
 
-    # Combina assemblies to one file to run blast on it
+    # Combine assemblies to one file to run blast on it
     combine_fastas(assemblies_dir, seq_combined_dir)
     
     create_dir(db_dir)
@@ -400,6 +426,7 @@ if ec_sh_species:
     
     values = []
     ec_founded = {}
+    sg_founded = {}
     for index, row in df.iterrows():
         gene_name = row[GENE_NAME_COL]
         sample_name = row[SAMPLE_NAME_COL]
@@ -409,22 +436,65 @@ if ec_sh_species:
         if sample_name in ec_founded:
             continue                
         
+        value = species_by_genes[gene_name]
+
         if gene_name in ec_genes:
             ec_founded[sample_name] = True
+        elif gene_name in sg_genes:
+            sg_founded[sample_name] = True
+        else:
+            value = '?'
       
-        values.append([sample_name, species_by_genes[gene_name]])
+        values.append([sample_name, value])
 
 
     if values:
-        header = ['sample', 'specie detected']
-        with open(blast_sum_report_file, 'w', newline='') as out_file:
-            csv_writer = csv.writer(out_file)
-            csv_writer.writerow(header) 
-            csv_writer.writerows(values) 
+        header = [SAMPLE_NAME_COL, SPECIE_DETECTED_COL]
+        df = pd.DataFrame(values, columns=header)
+        df.to_csv(blast_sum_report_file, index=False)
+
     else:
         logging.error(f"[EC_SG Detection] Error occurred while fetching report values\n")
         exit()
 
+
+
+if os.path.exists(blast_sum_report_file):
+    df_ec_sg = pd.read_csv(blast_sum_report_file)
+
+    if os.path.exists(detection_report_file):
+        get_info('Combine reports')
+        df_ec_sg.to_csv(detection_report_file, mode='a', index=False, header=False)
+    else:
+        df_ec_sg.to_csv(detection_report_file, index=False, header=False)
+
+
+remove_dir(tmp_dir)   
+remove_dir(samples_dir)                      
+
+# Create a separated file to get if matched or not
+get_info('Creating matched file')
+df = pd.read_csv(detection_report_file)
+
+no_matches = ''
+for index, row in df.iterrows():
+    sample           = row[SAMPLE_NAME_COL]
+    specie_detected  = row[SPECIE_DETECTED_COL]
+    sample_id        = re.split(r'(\d+)', sample)[0]
+    specie_name      = species_list[sample_id].lower()
+    
+    if not species_list[sample_id].lower() == row[SPECIE_DETECTED_COL].lower():
+        if len(no_matches) == 0:
+            no_matches += "Species didn't matched:\n"
+        no_matches += f"     -> {sample}: {specie_detected} detected instead of {specie_name}\n"
+
+if len(no_matches) == 0:
+    text = 'All the samples matched !'
+else:
+    text = no_matches
+
+with open(matched_file, 'w') as file:
+    file.write(text)
 
 
 
