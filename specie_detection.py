@@ -300,7 +300,7 @@ args = parser.parse_args()
 #####################################################
 # Variables
 
-DB                     = '/home/user1/Desktop/analysis/genome_analysis/dev/bin/minikraken2_v2_8GB_201904_UPDATE'
+DB                     = 'path/to/minikraken2_v2_8GB_201904_UPDATE'
 DB_DIR                 = 'db'
 TMP_DIR                = 'tmp'
 LOGS_DIR               = 'logs'
