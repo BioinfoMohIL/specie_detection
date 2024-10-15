@@ -49,6 +49,71 @@ def remove_dir(dir_path):
     except OSError as e:
         get_info('[Clean up]', f"Error: {e.strerror}")
 
+def unzipReads(file):
+    cmd = f'gunzip -f {file}'
+    os.system(cmd)
+
+def combineFiles(dir):
+    cmd ='cd ' + dir + ';'
+    cmd+= 'ls ' + dir + ' | egrep "_L00" | '
+    cmd+= 'awk \'BEGIN{FS=OFS="_"}{ print $1 } \' | sort | uniq | '
+    cmd+= 'while    read    line;do cat ' + dir + '/${line}_*_*_R1*.fastq.gz > ${line}_R1.fastq.gz && cat ' + dir + '/${line}_*_*_R2*.fastq.gz > ${line}_R2.fastq.gz; done;'
+    cmd+= 'cd ..'
+    os.system(cmd)
+
+def renameFile(dir):
+    for file in os.listdir(dir):
+        sample_name = file.split('_')[0]
+
+        if '_R1' in file:
+            sample_name += '_R1'
+        elif '_R2' in file:
+            sample_name += '_R2'
+
+        if '.gz' in file:
+            extension = 'fastq.gz'
+        else:
+            extension = 'fastq'
+
+        name = f"{sample_name}.{extension}"
+        
+        if(file == name):
+           continue
+
+        cmd = f'mv {os.path.join(dir, file)} {os.path.join(dir, name)}'
+        os.system(cmd) 
+
+@error_handler
+def setup(input_dir):
+    filenames = os.listdir(input_dir)
+
+    pattern = r"^(.*)_R[12](?:_\d+)?\.(fastq|fq)(\.gz)?$"
+
+    for filename in filenames:
+        match = re.match(pattern, filename)
+        if match:
+            reads_name = match.group(1) or match.group(2)
+        else:
+            exit(f"Filename: {filename}, Read unknow")
+
+    isMoreThanTwoReads = [s for s in os.listdir(input_dir) if "_L002" in s or "_L003" in s or "_L004" in s]
+
+    if(len(isMoreThanTwoReads) > 0):
+        try:
+            combineFiles(input_dir);
+        except Exception as e:
+            exit(f"Cannot rename reads. Please check your reads\n{e}")
+   
+    renameFile(input_dir)
+    
+    for file in os.listdir(input_dir):
+        if '.gz' in file:
+            try:
+                unzipReads(f'{input_dir}/*.gz')
+                break
+            except Exception as e:
+                exit(f"Cannot unzip {file}. Please check your reads\n{e}")  
+
 @error_handler
 def gather_reads(arr):
     paired_files = {}
@@ -84,7 +149,7 @@ def get_specie(file):
 def create_detection_report(input_file, output_file, sample):
     specie_detected = get_specie(input_file) 
 
-    if not os.path.exists(DETECTION_REPORT_FILE):
+    if not os.path.exists(input_file):
         with open(output_file, 'w') as f:
             f.write(f'{SAMPLE_NAME_COL},{SPECIE_DETECTED_COL}\n')
             f.write(f'{sample},{specie_detected}\n')
@@ -235,7 +300,7 @@ args = parser.parse_args()
 #####################################################
 # Variables
 
-DB                     = 'path/to/minikraken2_v2_8GB_201904_UPDATE'
+DB                     = '/home/user1/Desktop/analysis/genome_analysis/dev/bin/minikraken2_v2_8GB_201904_UPDATE'
 DB_DIR                 = 'db'
 TMP_DIR                = 'tmp'
 LOGS_DIR               = 'logs'
@@ -336,6 +401,9 @@ logging.basicConfig(filename=logs_file, level=logging.DEBUG,
 
 get_info('[SD]','Script start running')
 
+get_info('[SD]', 'Setup - preparing the data')
+setup(genomes)
+
 create_dir(specie_detection_dir)
 
 arr_ecoli_shigella_reads, arr_others_reads = fetch_ecoli_and_shigella(genomes, ec_and_sh)
@@ -343,11 +411,16 @@ arr_ecoli_shigella_reads, arr_others_reads = fetch_ecoli_and_shigella(genomes, e
 ec_sh_species   = gather_reads(arr_ecoli_shigella_reads)
 others_species  = gather_reads(arr_others_reads)
 
+get_info('[SD]', f'e.coli and shigella detected! -> {len(ec_sh_species)} specimen')
+get_info('[SD]', f'other species -> {len(others_species)} specimen')
+
 
 # Specie that are not ecoli shigella can be detected by kraken2 -- no problem!
 if others_species:
+    count = 0
     for sample, files in others_species.items():
-        get_info('[SD]', f'Running kraken2 on {sample}')
+        count += 1
+        get_info('[SD]', f'Running kraken2 on {sample}      [{count}/{len(others_species)}]')
         r1 = files['R1']
         r2 = files['R2']
         
@@ -369,27 +442,29 @@ if others_species:
             )
         
 get_info('[Report]','Report created!')
-
 # If samples ECXXXX or F-ECXXXX or SGXXXXX are present, we need discriminate them
 # in blasting genes specifi to ecoli and shigella, because kraken cannot
 if ec_sh_species:
-    get_info('[SD]', f'e.coli and shigella detected! ({len(ec_sh_species)} specimen)') 
+    count = 0
+    get_info('[SD]', f'Detection of Ecoli, Shigella') 
    
     create_dir(ec_sg_dir)
     create_dir(assemblies_dir)
 
     for sample, files in ec_sh_species.items():
+        get_info('[EC_SG]', f'Detection of {sample}      [{count}/{len(ec_sh_species)}]')
+
         r1 = files['R1']
         r2 = files['R2']
 
         trimmed_dir = os.path.join(samples_dir, sample, TRIMMED_DIR)
         create_dir(trimmed_dir)
-        get_info('[EC_SG]', f'Trimming {sample}')
+        get_info('[EC_SG]', f'  -> Trimming')
         trimming(r1, r2, genomes, trimmed_dir)
 
         assembly_dir = os.path.join(samples_dir, sample, ASSEMBLY_DIR)
         create_dir(assembly_dir)
-        get_info('[EC_SG]', f'Assembly {sample}')
+        get_info('[EC_SG]', f'  -> Assembly')
         assembly(
             r1=os.path.join(trimmed_dir, r1), 
             r2=os.path.join(trimmed_dir, r2),
